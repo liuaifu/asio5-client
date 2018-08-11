@@ -15,9 +15,7 @@ public:
 	~session(void);
 
 	void start();
-	void close_server();
-	void close_client();
-	//void stop(boost::shared_ptr<client> client_ptr_);
+	void stop();
 	void write_to_client(char *data, size_t size);
 	void handle_client_read(const boost::system::error_code& error, size_t bytes_transferred);
 	void handle_client_write(boost::shared_ptr<char> data, const boost::system::error_code& error);
