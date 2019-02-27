@@ -80,6 +80,15 @@ public:
 				continue;
 			}
 
+			tcp::resolver::iterator end;
+			if (g_proxy_iterator == end) {
+				//服务器的域名还没有解析
+				boost::system::error_code ec_sck;
+				sck->close(ec_sck);
+				BOOST_LOG_TRIVIAL(error) << "server domain name has not been resolved.";
+				continue;
+			}
+
 			boost::shared_ptr<session> session_ptr = boost::make_shared<session>(io_svc_, sck);
 			boost::fibers::fiber(boost::bind(&session::run, session_ptr)).detach();
 		}
@@ -155,7 +164,19 @@ int main(int argc, char **argv)
 
 	tcp::resolver resolver(*io_svc);
 	tcp::resolver::query query(proxy_host, proxy_port);
-	g_proxy_iterator = resolver.resolve(query);
+	
+	auto fn_resolver = [&]() {
+		boost::system::error_code ec;
+		while(true) {
+			g_proxy_iterator = resolver.async_resolve(query, boost::fibers::asio::yield[ec]);
+			if (!ec)
+				break;
+
+			boost::this_fiber::sleep_for(std::chrono::seconds(3));
+		}
+	};
+	boost::fibers::fiber(fn_resolver).detach();
+	//g_proxy_iterator = resolver.resolve(query);
 
 	io_svc->run();
 
