@@ -3,18 +3,11 @@
 
 #include "stdafx.h"
 #include "session.h"
-#include "round_robin.hpp"
 
-tcp::resolver::iterator g_proxy_iterator;
-namespace boost {
-	namespace fibers {
-		namespace asio {
-			thread_local boost::fibers::asio::yield_t yield{};
-		}
-	}
-}
 
 using boost::asio::ip::tcp;
+
+tcp::resolver::iterator g_proxy_iterator;
 
 void init_log(boost::log::trivial::severity_level log_level, std::string log_dir)
 {
@@ -60,7 +53,7 @@ public:
 	{
 	}
 
-	void run()
+	void run(boost::asio::yield_context yield)
 	{
 		int id = 0;
 		while (true) {
@@ -68,7 +61,7 @@ public:
 
 			boost::system::error_code ec;
 			boost::shared_ptr<tcp::socket> sck = boost::make_shared<tcp::socket>(*io_svc_);
-			acceptor_.async_accept(*sck, boost::fibers::asio::yield[ec]);
+			acceptor_.async_accept(*sck, yield[ec]);
 			if (ec) {
 				boost::system::error_code ec_sck;
 				sck->close(ec_sck);
@@ -96,7 +89,7 @@ public:
 			}
 
 			boost::shared_ptr<session> session_ptr = boost::make_shared<session>(io_svc_, sck);
-			boost::fibers::fiber(boost::bind(&session::run, session_ptr)).detach();
+			boost::asio::spawn(*io_svc_, boost::bind(&session::run, session_ptr, boost::placeholders::_1));
 		}
 	}
 
@@ -161,7 +154,7 @@ int main(int argc, char **argv)
 	short port = vm["port"].as<short>();
 	boost::shared_ptr< boost::asio::io_service > io_svc = boost::make_shared< boost::asio::io_service >();
 	boost::shared_ptr<server> server_ptr(new server(io_svc, port));
-	boost::fibers::fiber(boost::bind(&server::run, server_ptr)).detach();
+	boost::asio::spawn(*io_svc, boost::bind(&server::run, server_ptr, boost::placeholders::_1));
 	
 	BOOST_LOG_TRIVIAL(info) << "--------------------------------------------------";
 	BOOST_LOG_TRIVIAL(info) << "asio5 client v0.7";
@@ -169,24 +162,22 @@ int main(int argc, char **argv)
 	BOOST_LOG_TRIVIAL(info) << "compiled at " << __DATE__ << " " << __TIME__;
 	BOOST_LOG_TRIVIAL(info) << "listening on 0.0.0.0:" << port;
 
-	boost::fibers::use_scheduling_algorithm< boost::fibers::asio::round_robin >(io_svc);
-
 	tcp::resolver resolver(*io_svc);
 	tcp::resolver::query query(proxy_host, proxy_port);
 	
-	auto fn_resolver = [&]() {
+	auto fn_resolver = [&](boost::asio::yield_context yield) {
 		boost::system::error_code ec;
 		while(true) {
-			g_proxy_iterator = resolver.async_resolve(query, boost::fibers::asio::yield[ec]);
+			g_proxy_iterator = resolver.async_resolve(query, yield[ec]);
 			if (!ec)
 				break;
 
-			boost::this_fiber::sleep_for(std::chrono::seconds(3));
+			boost::asio::system_timer timer(*io_svc);
+			timer.expires_from_now(std::chrono::seconds(3));
+			timer.async_wait(yield);
 		}
 	};
-	boost::fibers::fiber(fn_resolver).detach();
-	//g_proxy_iterator = resolver.resolve(query);
-
+	boost::asio::spawn(*io_svc, fn_resolver);
 	io_svc->run();
 
     return 0;

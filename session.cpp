@@ -3,10 +3,11 @@
 #include <boost/bind.hpp>
 #include <iostream>
 
-extern boost::asio::io_service g_io_service;
+
 session::session(boost::shared_ptr<boost::asio::io_service> io_svc, boost::shared_ptr<tcp::socket> sck)
 	:client_socket(sck), server_socket(*io_svc)
 {
+	this->io_svc = io_svc;
 }
 
 session::~session(void)
@@ -14,13 +15,13 @@ session::~session(void)
 
 }
 
-void session::run()
+void session::run(boost::asio::yield_context yield)
 {
 	BOOST_LOG_TRIVIAL(debug) << "session start";
 	boost::system::error_code ec;
 	server_socket.async_connect(
 		*g_proxy_iterator,
-		boost::fibers::asio::yield[ec]
+		yield[ec]
 	);
 
 	if (ec) {
@@ -31,8 +32,8 @@ void session::run()
 
 	BOOST_LOG_TRIVIAL(debug) << "open " << g_proxy_iterator->host_name();
 
-	boost::fibers::fiber(boost::bind(&session::read_server_loop, shared_from_this())).detach();
-	read_client_loop();
+	boost::asio::spawn(*io_svc, boost::bind(&session::read_server_loop, shared_from_this(), boost::placeholders::_1));
+	read_client_loop(yield);
 }
 
 void session::stop()
@@ -54,7 +55,7 @@ void session::stop()
 	BOOST_LOG_TRIVIAL(debug) << "session stopped";
 }
 
-void session::read_server_loop()
+void session::read_server_loop(boost::asio::yield_context yield)
 {
 	char server_buf[SOCKET_RECV_BUF_LEN];
 	boost::system::error_code ec;
@@ -62,7 +63,7 @@ void session::read_server_loop()
 	while (true) {
 		size_t bytes_transferred = server_socket.async_read_some(
 			boost::asio::buffer(server_buf, SOCKET_RECV_BUF_LEN),
-			boost::fibers::asio::yield[ec]
+			yield[ec]
 		);
 		if (ec) {
 			if (ec == boost::asio::error::operation_aborted)
@@ -71,7 +72,7 @@ void session::read_server_loop()
 			stop();
 			return;
 		}
-		write_to_client(server_buf, bytes_transferred, ec);
+		write_to_client(yield, server_buf, bytes_transferred, ec);
 		if (ec) {
 			if (ec == boost::asio::error::operation_aborted)
 				return;
@@ -82,7 +83,7 @@ void session::read_server_loop()
 	}
 }
 
-void session::read_client_loop()
+void session::read_client_loop(boost::asio::yield_context& yield)
 {
 	char client_buf[SOCKET_RECV_BUF_LEN];
 	boost::system::error_code ec;
@@ -90,7 +91,7 @@ void session::read_client_loop()
 	while (true) {
 		size_t bytes_transferred = client_socket->async_read_some(
 			boost::asio::buffer(client_buf, SOCKET_RECV_BUF_LEN),
-			boost::fibers::asio::yield[ec]
+			yield[ec]
 		);
 		if (ec) {
 			if (ec == boost::asio::error::operation_aborted)
@@ -99,7 +100,7 @@ void session::read_client_loop()
 			stop();
 			return;
 		}
-		write_to_server(client_buf, bytes_transferred, ec);
+		write_to_server(yield, client_buf, bytes_transferred, ec);
 		if (ec) {
 			if (ec == boost::asio::error::operation_aborted)
 				return;
@@ -110,7 +111,7 @@ void session::read_client_loop()
 	}
 }
 
-void session::write_to_client(char *data, size_t size, boost::system::error_code& ec)
+void session::write_to_client(boost::asio::yield_context& yield, char *data, size_t size, boost::system::error_code& ec)
 {
 	boost::shared_ptr<char> data_ptr = boost::shared_ptr<char>(new char[size]);
 	memcpy(data_ptr.get(), data, size);
@@ -120,11 +121,11 @@ void session::write_to_client(char *data, size_t size, boost::system::error_code
 	boost::asio::async_write(
 		*client_socket,
 		boost::asio::buffer(data_ptr.get(), size),
-		boost::fibers::asio::yield[ec]
+		yield[ec]
 	);
 }
 
-void session::write_to_server(char *data, size_t size, boost::system::error_code& ec)
+void session::write_to_server(boost::asio::yield_context& yield, char *data, size_t size, boost::system::error_code& ec)
 {
 	auto data_ptr = boost::shared_ptr<char>(new char[size]);
 	memcpy(data_ptr.get(), data, size);
@@ -134,6 +135,6 @@ void session::write_to_server(char *data, size_t size, boost::system::error_code
 	boost::asio::async_write(
 		server_socket,
 		boost::asio::buffer(data_ptr.get(), size),
-		boost::fibers::asio::yield[ec]
+		yield[ec]
 	);
 }
